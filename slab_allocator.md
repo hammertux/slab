@@ -15,9 +15,9 @@ Seen as the Slab allocator is a fairly hard and advanced topic to grasp, I thoug
 
 The basic idea of a buddy allocator is fairly simple. Physical memory is broken up into large chunks of memory where each chunk is a _"page order"_ (i.e., $2^n * PAGE\_SIZE$). Whenever a block of memory needs to be allocated and the size of it is not available, one big chunk is halved continuously, until a chunk of the correct size is found. At this point, of the two halves, also known as __buddies__, one will be used to satisfy the allocation request, and the other will remain free. At a later stage, if and when that memory is free'd, the two buddies (if both free) will coalesce forming a larger chunk of free memory.
 
-_Note: Linux uses a buddy allocator for each memory zone. You are not necessarily expected to understand the notion of a memory zone. Generally speaking there will be DMA and DMA32 zones, highmem zone and a Normal zone and other zones (e.g., Zone Movable).
+_Note: Linux uses a buddy allocator for each memory zone. You are not necessarily expected to understand the notion of a memory zone. Generally speaking there will be DMA and DMA32 zones, highmem zone and a Normal zone and other zones (e.g., Zone Movable)._
 
-The buddy allocator keeps track of free areas via an array "queues" of type `struct free_area` which keeps track of the free chunks (in reality we are talking about page frames --> `struct page`). It goes from 0 (min order) to 10 (MAX\_ORDER - 1).
+The buddy allocator keeps track of free areas via an array of "queues" of type `struct free_area` which keeps track of the free chunks (in reality we are talking about page frames --> `struct page`). It goes from 0 (min order) to 10 (MAX\_ORDER - 1).
 
 ```c
 struct free_area {
@@ -27,7 +27,7 @@ struct free_area {
 
 ```
 
-Note that the buddy allocator (and the slab allocator) allocate physically contiguous memory blocks. The third allocator in the linux kernel, vmalloc() (which won't be discussed) on the other hand, allocates memory that is ONLY virtually contiguous but not necessarily physical. It is primarily used for very large allocations, and cannot be used in cases where virtual addressing is not possible (e.g., devices)
+Note that the buddy allocator (and the slab allocator) allocate physically contiguous memory blocks. The third allocator in the linux kernel, vmalloc() (which won't be discussed for the time being) on the other hand, allocates memory that is ONLY virtually contiguous but not necessarily physical. It is primarily used for very large allocations, and cannot be used in cases where virtual addressing is not possible (e.g., devices)
 
 ![buddy](./buddy.png "Buddy Allocator")
 
@@ -56,13 +56,13 @@ _Note that in reality, the linux kernel maintainers have optimised the buddy all
 
 ## The Slab Allocator
 
-The slab allocator in linux sits on top of the buddy allocator and the basic idea behind it is to keep caches of commonly used objects available for allocation in the kernel. This is particularly useful because the linux kernel allocates and frees many structures continuously (for example, the `struct task_struct` which is the structure that represents a process, `inodes`, `dentries`, etc...). By caching the freed object, it is possible for the basic structure to be preserved betweeen uses thus allowing for quick allocation of new copies of the same structures. I.e., By reusing the freed objects, in some cases, the kernel doesn't necessarily have to reinitialise them from scratch. Over the years (and many kernel versions...) the linux slab allocator has evolved, and changed substantially. there have been three different implementations to this day:
+The slab allocator in linux sits on top of the buddy allocator and the basic idea behind it is to keep caches of commonly used objects available for allocation in the kernel. This is particularly useful because the linux kernel allocates and frees many structures continuously (for example, the `struct task_struct` which is the structure that represents a process, `inodes`, `dentries`, etc...). By caching the freed object, it is possible for the basic structure to be preserved betweeen uses thus allowing for quick allocation of new copies of the same structures. I.e., By reusing the freed objects, in some cases, the kernel doesn't necessarily have to reinitialise them from scratch. Over the years (and many kernel versions...) the linux slab allocator has evolved, and changed substantially. There have been three different implementations to this day:
 
-1. __SLOB Allocator__: Now used for embedded systems where memory is scarce, performs well when allocating very small chunks of memory.
+1. __SLOB Allocator__: Now used for embedded systems where memory is scarce, performs well when allocating very small chunks of memory. Based on the _first-fit_ allocation algorithm.
 2. __SLAB Allocator__: An improvement over the SLOB allocator, aims to be very _"cache-friendly"_.
 3. __SLUB Allocator__: Has better execution time than the SLAB allocator by reducing the number of queues/chains used.
 
-Nowadays (depending on the distribution you are using e.g., Debian-based) the default Slab allocator is the SLUB allocator.
+Nowadays (on most distributions) the default Slab allocator is the SLUB allocator.
 
 _Note: The generic "Slab Allocator" term can be used to refer to all three alllocators. Whenever there is the need to make a clear distinction between the allocators, I will write SLOB, SLAB or SLUB in capital letters._
 
@@ -152,6 +152,8 @@ struct vm_area_struct *vma = kmem_cache_alloc(vm_area_cachep, GFP_KERNEL);
  */
 ```
 
+#### __SLAB Cache Management__
+
 The three main structures that are used to manage caches in the __SLAB allocator__ are:
 
 1. `struct kmem_cache` ("/include/linux/slab_def.h").
@@ -172,8 +174,10 @@ The interplay of these data structures and how the SLAB allocator helps to parti
 
 ![SLAB-DS](./SLAB-DS.png "SLAB Structures")
 
+#### __SLUB Cache Management__
+
 In the __SLUB allocator__ things are less complicated because it stops keeping lists (queues) of different types, each cpu etc...
-Also the data structures used by SLUB are less cluttered and complicated thanks to these adjustments. The only queue that the SLUB allocator manages is a linked list for every of the objects in each of the slab pages. The idea was to minimise TLB thrashing by associating a slab page to the CPU instead of a queue, so that we are only allocating objects within that page, meaning that we will be accessing the same TLB entry.
+Also the data structures used by SLUB are less cluttered and complicated thanks to these adjustments. The only queue that the SLUB allocator manages is a linked list for every of the objects in each of the slab pages. The idea was to minimise TLB thrashing by associating a slab page to the CPU (known as __CPU slab__) instead of a queue, so that we are only allocating objects within that page, meaning that we will be accessing the same TLB entry.
 
 The SLUB allocator also uses three main structures to manage slab caches:
 
@@ -181,11 +185,22 @@ The SLUB allocator also uses three main structures to manage slab caches:
 2. `struct kmem_cache_cpu` ("/include/linux/slub_def.h").
 3. `struct kmem_cache_node` ("/mm/slab.h").
 
+As I did with the SLAB allocator, I will go through some fields of the `struct kmem_cache` which show how SLUB manages its caches:
 
+* `unsigned int object_size` and `unsigned int size` : These two fields represent, respectively, the size of the object without metadata, and the size of the object including the metadata.
+* `void (*ctor)(void *)` : defines the constructor of the object which we want to allocate.
+* `struct list_head list` : represents the list of all active slab caches.
+* `struct kmem_cache_cpu __percpu *cpu_slab` : This structure is used to keep track of the available objects in the cache. It contains two members of particular importance: `void **freelist` which points to the next available object and `struct page *page` which represents the slab page from which the allocation is happening (remember that SLUB, unlike SLAB, associates a slab page to every cpu instead of a queue).
+* `struct kmem_cache_node *node[MAN_NUMNODES]` : This structure holds a `struct list_head partial` which is the only linked per cpu list that tracks partial slabs.
+* `unsigned int offset` : Used to get the next free pointer in the slab page.
+
+The interplay of these structures is showed below:
+
+![SLUB Structures](./SLUB-DS.png "SLUB Structures")
 
 ### __Slabs__
 
-Older kernels relied on a separate `struct slab` to define a slab. Nowadays, the slab management is kept into the `struct page` as an anonymous struct:
+Older kernel versions relied on a separate `struct slab_s` to define a slab. Nowadays, the slab management is kept into the `struct page` as an anonymous struct:
 
 ```c
 
@@ -228,19 +243,42 @@ struct page {
 
 ```
 
+#### __SLAB slab Management__
+
 I will first explain __SLAB__ specific members in order to show the interplay with the structures explained in the _Caches section_ for SLAB.
 Some of these structure members are more interesting and help with the understanding of how slabs are managed:
 
 * `void *s_mem` : points to the start of an object in the page frame.
 * `struct kmem_cache *slab_cache` : Used by the `struct kmem_cache_node` structure to keep track of lists of all the pages.
 * `struct list_head slab_list` : Used to keep track of which slab list(partial/full/free) this page frame belongs to.
-* `void *freelist` : Is used to point to the first free object in the page frame.
+* `void *freelist` : Is used to point to the first free object in the page frame. Intuitively, it contains indeces for every free object in the page frame. Allows multiple requests for free objects to be satisfied from the same cacheline.
+
+The objects in SLAB which make up a slab page are rendered in memory as shown below:
+
+![SLAB Obj Layout](./SLAB-Obj.png "SLAB Object Layout")
+
+
+#### __SLUB slab Management__
+
+Before we look at the members used by SLUB for slab management, a brief explanation on how SLUB manages freelists is in order. To manage free objects, the SLUB allocator actually uses two freelists. The first, in the `struct page` which needs locking to be accessed, and the other one in the `struct kmem_cache_cpu` which is local and can be accessed/modified in a lock-free manner. The first is mainly used in the case where two objects in the same page have to be updated by different CPUs. The second freelist is used when we assign a slab page to the "per-cpu" structure. It takes the whole freelist off the page struct and puts it in the local `kmem_cache_cpu` structure and it can be used without locking. Once the local freelist is empty, it will poll the struct page to see if there are any new free objects and if so, it adds them to the local freelist.
+
+Now, let's take a look at some members of the `struct page` which are needed for slab management:
+
+* `void *freelist` : Points to the first free object in the page frame and can be accessed by different CPUs.
+* `unsigned inuse:16` : Uses 16 bits as a counter which keeps track of the number of objects being used. Intuitively, when this counter is equal to 0, all objects are unused, and if necessary, the slab can be freed and the pages returned back to the kernel for future allocations.
+* `unsigned objects:15` : Uses 15 bits to represent the total amount of objects in the page.
+
+The objects in SLUB which make up a slab page are shown below:
+
+![SLUB-Obj Layout](./SLUB-Obj.png "SLUB Object Layout")
 
 ### Slab Allocator Placement:
 
 A (simplified) and general overview of the memory allocators in the linux kernel is depicted below:
 
-![Memory Allocator Hierarchy](./overview.png "Memory Allocator Hierarchy")
+<img src="./overview.png" height="450">
+
+
 
 At startup, the slab allocator does not have pages available quite yet. Through the use of two procedures, it can request page frames from the buddy allocator:
 
@@ -253,7 +291,11 @@ static void kmem_freepages(struct kmem_cache *cachep, struct page *page); // fre
 
 ```
 
-These two functions are some wrappers around the lower-level `alloc_pages` and `free_pages` (discussed in the _Buddy Allocator section_ which the buddy allocator exposes for page frame allocation. These wrappers are used in order to set all the metadata (i.e., flags) which represent allocations that go through the slab allocator.
+These two functions are some wrappers around the lower-level `alloc_pages` and `free_pages` (discussed in the _Buddy Allocator section_) which the buddy allocator exposes for page frame allocation. These wrappers are used in order to set all the metadata (i.e., flags) which represent allocations that go through the slab allocator.
+
+## Concluding Thoughts
+
+In this writeup i have covered the basics of two of the memory allocators that live in the Linux kernel, i.e., Buddy allocator and Slab allocator. By this point it should be somewhat clear how they work together in order to increase memory usage. I have covered how SLAB and SLUB differ without having explained SLOB (for now). I might cover vmalloc() in the future as well. Hopefully the `mm` subtree is now _slightly_ less scary :).
 
 ## References
 
