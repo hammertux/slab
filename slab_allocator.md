@@ -13,7 +13,7 @@ Seen as the Slab allocator is a fairly hard and advanced topic to grasp, I thoug
 
 ## The Buddy Allocator
 
-The basic idea of a buddy allocator is fairly simple. Physical memory is broken up into large chunks of memory where each chunk is a _"page order"_ (i.e., $2^n * PAGE\_SIZE$). Whenever a block of memory needs to be allocated and the size of it is not available, one big chunk is halved continuously, until a chunk of the correct size is found. At this point, of the two halves, also known as __buddies__, one will be used to satisfy the allocation request, and the other will remain free. At a later stage, if and when that memory is free'd, the two buddies (if both free) will coalesce forming a larger chunk of free memory.
+The basic idea of a buddy allocator is fairly simple. Physical memory is broken up into large chunks of memory where each chunk is a _"page order"_ (i.e., 2^n * PAGE\_SIZE). Whenever a block of memory needs to be allocated and the size of it is not available, one big chunk is halved continuously, until a chunk of the correct size is found. At this point, of the two halves, also known as __buddies__, one will be used to satisfy the allocation request, and the other will remain free. At a later stage, if and when that memory is free'd, the two buddies (if both free) will coalesce forming a larger chunk of free memory.
 
 _Note: Linux uses a buddy allocator for each memory zone. You are not necessarily expected to understand the notion of a memory zone. Generally speaking there will be DMA and DMA32 zones, highmem zone and a Normal zone and other zones (e.g., Zone Movable)._
 
@@ -50,7 +50,7 @@ Both functions take the order as the parameter to see which queue to look for. I
 
 The GFP (Get Free Page) mask that is in the `alloc_pages` signature represents a set of flags that can be combined to represent who requests the memory allocation: e.g., `GFP_KERNEL` is used when allocating page frames for use in the kernel, `GFP_USER` is for userspace allocations, etc... (For a complete list of the GFP flags, see `include/linux/gfp.h`).
 
-As it might be clear by now, the buddy allocator has one big problem. Say we want to allocate 33 pages. Seen as the buddy allocator works with the order queues explained above, the minimum amount of pages we can get is $2^6 = 64$ because $33 > 2^5 (=32)$. This _"wastes"_ 31 pages (i.e., for an allocation of 33 pages, we would have an overhead of $\frac{31}{64} * 100 = 48\%$). This is also known as __internal fragmentation__. This problem in Linux is addressed using the __slab allocator__ which slices pages into smaller blocks of memory (slabs) for allocation.
+As it might be clear by now, the buddy allocator has one big problem. Say we want to allocate 33 pages. Seen as the buddy allocator works with the order queues explained above, the minimum amount of pages we can get is 2^6 = 64 because 33 > 2^5 (=32). This _"wastes"_ 31 pages (i.e., for an allocation of 33 pages, we would have an overhead of 31/64 * 100 = 48\%). This is also known as __internal fragmentation__. This problem in Linux is addressed using the __slab allocator__ which slices pages into smaller blocks of memory (slabs) for allocation.
 
 _Note that in reality, the linux kernel maintainers have optimised the buddy allocator by defining page mobility (i.e., **some** pages are reclaimable or movable) which reduces the overhead discussed above, however this is outside the scope of this writeup_ (if interested see the definition of `enum migratetype` in "linux/mmzone.h").
 
@@ -162,7 +162,7 @@ The three main structures that are used to manage caches in the __SLAB allocator
 
 I have already showed that `struct kmem_cache` is exposed to the programmer in order to create a cache and allocate an object in the cache. Some fields of this structure are of particular importance:
 
-* `unsigned int gfporder` : defines the order (in powers of two -- $2^n$) of pages per slab. This is used by the slab allocator to request memory from the buddy allocator.
+* `unsigned int gfporder` : defines the order (in powers of two -- 2^n) of pages per slab. This is used by the slab allocator to request memory from the buddy allocator.
 * `void (*ctor)(void *obj)` : defines the constructor of the object which we want to allocate.
 * `int object size` : size of the object being allocated through the slab cache.
 * `size_t colour` and `unsigned int colour_off` : used for cache coloring (I will skip the details of cache coloring for the time being).
