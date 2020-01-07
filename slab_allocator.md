@@ -2,7 +2,7 @@
 
 Author: Andrea Di Dio
 
-If you have any further questions or suggestions after reading this writeup feel free to contact me at a.didio@student.vu.nl or on Twitter (@hammertux). I will try to answer any questions or adopt any suggestions :)
+If you have any further questions or suggestions after reading this writeup feel free to contact me at a.didio@student.vu.nl or on Twitter ([@hammertux](https://twitter.com/hammertux "hammertux")). I will try to answer any questions or adopt any suggestions :)
 
 ## Introduction
 
@@ -58,7 +58,7 @@ _Note that in reality, the linux kernel maintainers have optimised the buddy all
 
 The slab allocator in linux sits on top of the buddy allocator and the basic idea behind it is to keep caches of commonly used objects available for allocation in the kernel. This is particularly useful because the linux kernel allocates and frees many structures continuously (for example, the `struct task_struct` which is the structure that represents a process, `inodes`, `dentries`, etc...). By caching the freed object, it is possible for the basic structure to be preserved betweeen uses thus allowing for quick allocation of new copies of the same structures. I.e., By reusing the freed objects, in some cases, the kernel doesn't necessarily have to reinitialise them from scratch. Over the years (and many kernel versions...) the linux slab allocator has evolved, and changed substantially. There have been three different implementations to this day:
 
-1. __SLOB Allocator__: Now used for embedded systems where memory is scarce, performs well when allocating very small chunks of memory. Based on the _first-fit_ allocation algorithm.
+1. __SLOB Allocator__: Was the original slab allocator as implemented in _Solaris OS_. Now used for embedded systems where memory is scarce, performs well when allocating very small chunks of memory. Based on the _first-fit_ allocation algorithm.
 2. __SLAB Allocator__: An improvement over the SLOB allocator, aims to be very _"cache-friendly"_.
 3. __SLUB Allocator__: Has better execution time than the SLAB allocator by reducing the number of queues/chains used.
 
@@ -152,6 +152,10 @@ struct vm_area_struct *vma = kmem_cache_alloc(vm_area_cachep, GFP_KERNEL);
  */
 ```
 
+
+
+
+
 #### __SLAB Cache Management__
 
 The three main structures that are used to manage caches in the __SLAB allocator__ are:
@@ -173,6 +177,8 @@ I have already showed that `struct kmem_cache` is exposed to the programmer in o
 The interplay of these data structures and how the SLAB allocator helps to partition a page frame into separate chunks of objects is depicted below:
 
 ![SLAB-DS](./SLAB-DS.png "SLAB Structures")
+
+__Note:__ In previous kernels, the developers where overloading the lru list in the page struct for maintaining lists of slabs. Today, this management is done via the `slab_list`. Seen as the image is older than this patch, I had to adjust it.
 
 #### __SLUB Cache Management__
 
@@ -197,6 +203,24 @@ As I did with the SLAB allocator, I will go through some fields of the `struct k
 The interplay of these structures is showed below:
 
 ![SLUB Structures](./SLUB-DS.png "SLUB Structures")
+
+#### __What about SLOB?__
+
+The SLOB (Simple List Of Blocks) allocator, is very different in nature from the SLAB and SLUB allocators because it doesn't maintain cache descriptors, which makes object management very simple. The SLOB allocator keeps track of partially free slob pages in three separate freelists defined in `"/mm/slob.c"`:
+
+1. `free_slob_small` : freelist for pages containing objects smaller than 256 Bytes.
+2. `free_slob_medium` : freelist for pages containing objects smaller than 1024 Bytes.
+3. `free_slob_large` : freelist for pages containing all other objects (smaller than `PAGE_SIZE`).
+
+Even though cache management is essentially avoided, the SLOB allocator still provides the common interfaces such as `kmalloc()`, `kfree`, `kmem_cache_alloc()` and so on... These are however, only wrappers around the `slob_alloc()` and `slob_free()` functions which operate on the three lists mentioned above.
+
+SLOB also has a very light support for NUMA architectures and only does node accounting, but makes the buddy allocator deal with per node allocation of pages. nevertheless, note that the three lists are node per-cpu lists and instead, are global, pages from all the nodes will be inserted in the three global lists.
+
+Every time we try to allocate an object using the SLOB allocator, the `slob_alloc()` routine will iterate through each partially free page in one of the three lists (depending on the size of the object we are trying to allocate) and will try to do allocation using a __first-fit__ algorithm. The obvious downside of this approach is that we can end up in a state in which the memory is heavily fragmented.
+
+The interplay of these structures is showed below:
+
+![SLOB Structures](./SLOB-DS.png "SLOB Structures")
 
 ### __Slabs__
 
@@ -248,7 +272,7 @@ struct page {
 I will first explain __SLAB__ specific members in order to show the interplay with the structures explained in the _Caches section_ for SLAB.
 Some of these structure members are more interesting and help with the understanding of how slabs are managed:
 
-* `void *s_mem` : points to the start of an object in the page frame.
+* `void *s_mem` : Points to the start of an object in the page frame.
 * `struct kmem_cache *slab_cache` : Used by the `struct kmem_cache_node` structure to keep track of lists of all the pages.
 * `struct list_head slab_list` : Used to keep track of which slab list(partial/full/free) this page frame belongs to.
 * `void *freelist` : Is used to point to the first free object in the page frame. Intuitively, it contains indeces for every free object in the page frame. Allows multiple requests for free objects to be satisfied from the same cacheline.
@@ -271,6 +295,17 @@ Now, let's take a look at some members of the `struct page` which are needed for
 The objects in SLUB which make up a slab page are shown below:
 
 ![SLUB-Obj Layout](./SLUB-Obj.png "SLUB Object Layout")
+
+#### __SLOB slab management__
+
+Within a slob page, the SLOB allocator uses a few members from the strut page in order to manage object placement within a page:
+
+* `void *freelist` : Points to the first free object in the page. From the first free object it is possible to traverse the other free objects in the same page.
+* `void *s_mem` : Points to the start of an object in the page frame.
+
+The objects in SLOB which make up a slab page are shown below:
+
+![SLOB-Obj Layout](./SLOB-Obj.png "SLOB Object Layout")
 
 ### Slab Allocator Placement:
 
@@ -295,7 +330,7 @@ These two functions are some wrappers around the lower-level `alloc_pages` and `
 
 ## Concluding Thoughts
 
-In this writeup i have covered the basics of two of the memory allocators that live in the Linux kernel, i.e., Buddy allocator and Slab allocator. By this point it should be somewhat clear how they work together in order to increase memory usage. I have covered how SLAB and SLUB differ without having explained SLOB (for now). I might cover vmalloc() in the future as well. Hopefully the `mm` subtree is now _slightly_ less scary :).
+In this writeup I have covered the basics of two of the memory allocators that live in the Linux kernel, i.e., Buddy allocator and Slab allocator. By this point it should be somewhat clear how they work together in order to increase memory usage. I have covered how SLAB and SLUB differ and gave a brief explanation of SLOB. I might cover vmalloc() in the future as well, possibly in a separate post. Hopefully the `mm` subtree is now _slightly_ less scary :).
 
 ## References
 
